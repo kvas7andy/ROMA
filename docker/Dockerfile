@@ -1,4 +1,4 @@
-FROM nvidia/cuda:9.2-cudnn7-devel-ubuntu18.04
+FROM nvidia/cuda:9.2-cudnn7-devel-ubuntu16.04
 MAINTAINER Tabish Rashid
 
 # CUDA includes
@@ -20,7 +20,7 @@ RUN curl -sk https://raw.githubusercontent.com/torch/distro/master/install-deps 
 
 # Install python3 pip3
 RUN apt-get update
-RUN apt-get -y install python3
+RUN apt-get -y install python3.8
 RUN apt-get -y install python3-pip
 RUN pip3 install --upgrade pip
 
