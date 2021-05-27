@@ -23,20 +23,20 @@ class LatentCEDisRNNAgent(nn.Module):
         NN_HIDDEN_SIZE = args.NN_HIDDEN_SIZE
         activation_func=nn.LeakyReLU()
 
-        self.embed_net = nn.Sequential(nn.Linear(self.embed_fc_input_size, NN_HIDDEN_SIZE),
+        self.embed_net = nn.Sequential(nn.Linear(self.embed_fc_input_size, NN_HIDDEN_SIZE), # role encoder - p_theta_rho(\rho_i^t|o_i^t)
                                        nn.BatchNorm1d(NN_HIDDEN_SIZE),
                                        activation_func,
-                                       nn.Linear(NN_HIDDEN_SIZE, args.latent_dim * 2))
+                                       nn.Linear(NN_HIDDEN_SIZE, args.latent_dim * 2)) # mu+var
 
-        self.inference_net = nn.Sequential(nn.Linear(args.rnn_hidden_dim + input_shape, NN_HIDDEN_SIZE),
+        self.inference_net = nn.Sequential(nn.Linear(args.rnn_hidden_dim + input_shape, NN_HIDDEN_SIZE), # trajectory encoder -  q(\rho_i^t|\tau_i^{t-1}, o_it)
                                            nn.BatchNorm1d(NN_HIDDEN_SIZE),
                                            activation_func,
-                                           nn.Linear(NN_HIDDEN_SIZE, args.latent_dim * 2))
+                                           nn.Linear(NN_HIDDEN_SIZE, args.latent_dim * 2)) # mu+var
 
         self.latent = th.rand(args.n_agents, args.latent_dim * 2)  # (n,mu+var)
         self.latent_infer = th.rand(args.n_agents, args.latent_dim * 2)  # (n,mu+var)
 
-        self.latent_net = nn.Sequential(nn.Linear(args.latent_dim, NN_HIDDEN_SIZE),
+        self.latent_net = nn.Sequential(nn.Linear(args.latent_dim, NN_HIDDEN_SIZE), # role decoder - g_\theta_h(\rho_i^t)
                                         nn.BatchNorm1d(NN_HIDDEN_SIZE),
                                         activation_func)
 
@@ -78,16 +78,16 @@ class LatentCEDisRNNAgent(nn.Module):
         mi = self.mi
         di = self.dissimilarity
         indicator=[var_mean,mi.max(),mi.min(),mi.mean(),mi.std(),di.max(),di.min(),di.mean(),di.std()]
-        return indicator, self.latent[:self.n_agents, :].detach(), self.latent_infer[:self.n_agents, :].detach()
+        return xtor, self.latent[:self.n_agents, :].detach(), self.latent_infer[:self.n_agents, :].detach()
 
     def forward(self, inputs, hidden_state, t=0, batch=None, test_mode=None, t_glob=0, train_mode=False):
         inputs = inputs.reshape(-1, self.input_shape)
-        h_in = hidden_state.reshape(-1, self.hidden_dim)
+        h_in = hidden_state.reshape(-1, self.hidden_dim) ## \tau_i^{t-1}
 
         embed_fc_input = inputs[:, - self.embed_fc_input_size:]  # own features(unit_type_bits+shield_bits_ally)+id
 
-        self.latent = self.embed_net(embed_fc_input)
-        self.latent[:, -self.latent_dim:] = th.clamp(th.exp(self.latent[:, -self.latent_dim:]), min=self.args.var_floor)  # var
+        self.latent = self.embed_net(embed_fc_input) # role-encoder output == (mu & sigma): p(\rho_i^t |o_i^t) - N(mu, sigma)
+        self.latent[:, -self.latent_dim:] = th.clamp(th.exp(self.latent[:, -self.latent_dim:]), min=self.args.var_floor)  # Sigma == var
         #self.latent[:, -self.latent_dim:] = th.full_like(self.latent[:, -self.latent_dim:],1.0)
 
         latent_embed = self.latent.reshape(self.bs * self.n_agents, self.latent_dim * 2)
@@ -96,21 +96,22 @@ class LatentCEDisRNNAgent(nn.Module):
         gaussian_embed = D.Normal(latent_embed[:, :self.latent_dim], (latent_embed[:, self.latent_dim:]) ** (1 / 2))
         latent = gaussian_embed.rsample()
 
-        c_dis_loss = th.tensor(0.0).to(self.args.device)
-        ce_loss = th.tensor(0.0).to(self.args.device)
+        c_dis_loss = th.tensor(0.0).to(self.args.device) # Specialized loss
+        ce_loss = th.tensor(0.0).to(self.args.device) # Identifiable loss
         loss = th.tensor(0.0).to(self.args.device)
 
         if train_mode and (not self.args.roma_raw):
             #gaussian_embed = D.Normal(latent_embed[:, :self.latent_dim], (latent_embed[:, self.latent_dim:]) ** (1 / 2))
             #latent = gaussian_embed.rsample()
 
-            self.latent_infer = self.inference_net(th.cat([h_in.detach(), inputs], dim=1))
-            self.latent_infer[:, -self.latent_dim:] = th.clamp(th.exp(self.latent_infer[:, -self.latent_dim:]),min=self.args.var_floor)
+            self.latent_infer = self.inference_net(th.cat([h_in.detach(), inputs], dim=1))# q_\xi(\rho_i^t|\tau_i^{t-1}, o_i^t)
+            self.latent_infer[:, -self.latent_dim:] = th.clamp(th.exp(self.latent_infer[:, -self.latent_dim:]),min=self.args.var_floor) # n,mu+var for q_xi
             #self.latent_infer[:, -self.latent_dim:] = th.full_like(self.latent_infer[:, -self.latent_dim:],1.0)
             gaussian_infer = D.Normal(self.latent_infer[:, :self.latent_dim], (self.latent_infer[:, self.latent_dim:]) ** (1 / 2))
             latent_infer = gaussian_infer.rsample()
 
             loss = gaussian_embed.entropy().sum(dim=-1).mean() * self.args.h_loss_weight + kl_divergence(gaussian_embed, gaussian_infer).sum(dim=-1).mean() * self.args.kl_loss_weight   # CE = H + KL
+            # ce_loss is Identifiable roles loss
             loss = th.clamp(loss, max=2e3)
             # loss = loss / (self.bs * self.n_agents)
             ce_loss = th.log(1 + th.exp(loss))
@@ -130,10 +131,12 @@ class LatentCEDisRNNAgent(nn.Module):
                                               latent_move[:, :, :self.latent_dim],
                                             # (latent_dis[:, :, :self.latent_dim]-latent_move[:, :, :self.latent_dim])**2
                                               ], dim=2)
+
+                    # inference network? gaussian_embed is the role encoder
                     mi = th.clamp(gaussian_embed.log_prob(latent_move.view(self.bs * self.n_agents, -1))+13.9, min=-13.9).sum(dim=1,keepdim=True) / self.latent_dim
 
                     dissimilarity = th.abs(self.dis_net(latent_dis_pair.view(-1, 2 * self.latent_dim)))
-
+ч
                     if dissimilarity_cat is None:
                         dissimilarity_cat = dissimilarity.view(self.bs, -1).clone()
                     else:
@@ -158,6 +161,8 @@ class LatentCEDisRNNAgent(nn.Module):
                 dis_norm = th.norm(dissimilarity_cat, p=1, dim=1).sum() / self.bs / self.n_agents
 
                 #c_dis_loss = (dis_loss + dis_norm) / self.n_agents * cur_dis_loss_weight
+
+                # Specialized roles loss
                 c_dis_loss = (dis_norm + self.args.soft_constraint_weight * dis_loss) / self.n_agents * cur_dis_loss_weight
                 loss = ce_loss +  c_dis_loss
 
@@ -171,6 +176,7 @@ class LatentCEDisRNNAgent(nn.Module):
         # Role -> FC2 Params
         latent = self.latent_net(latent)
 
+        # role decoder
         fc2_w = self.fc2_w_nn(latent)
         fc2_b = self.fc2_b_nn(latent)
         fc2_w = fc2_w.reshape(-1, self.args.rnn_hidden_dim, self.args.n_actions)
