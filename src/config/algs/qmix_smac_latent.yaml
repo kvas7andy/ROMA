@@ -46,3 +46,7 @@ save_model: True
 use_cuda: False
 device_num: 0
 save_replay: False
+
+second:
+  new1: sdfsf
+  new2: sfsdf

@@ -78,7 +78,7 @@ class LatentCEDisRNNAgent(nn.Module):
         mi = self.mi
         di = self.dissimilarity
         indicator=[var_mean,mi.max(),mi.min(),mi.mean(),mi.std(),di.max(),di.min(),di.mean(),di.std()]
-        return xtor, self.latent[:self.n_agents, :].detach(), self.latent_infer[:self.n_agents, :].detach()
+        return indicator, self.latent[:self.n_agents, :].detach(), self.latent_infer[:self.n_agents, :].detach()
 
     def forward(self, inputs, hidden_state, t=0, batch=None, test_mode=None, t_glob=0, train_mode=False):
         inputs = inputs.reshape(-1, self.input_shape)
