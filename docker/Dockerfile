@@ -20,7 +20,7 @@ RUN curl -sk https://raw.githubusercontent.com/torch/distro/master/install-deps 
 
 # Install python3 pip3
 #RUN add-apt-repository ppa:deadsnakes/ppa
-#RUN apt-get update
+RUN apt-get update
 RUN apt-get -y install python3.5
 #RUN apt-get -y install python3.8-distutils
 #RUN rm /usr/bin/python3
